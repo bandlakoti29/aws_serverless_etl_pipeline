@@ -7,9 +7,6 @@ from awsglue.context import GlueContext
 from awsglue.job import Job
 from awsglue.dynamicframe import DynamicFrame, DynamicFrameCollection
 
-# ----------------------------------------
-# Node 1: Source
-# ----------------------------------------
 def SourceNode(glueContext):
     return glueContext.create_dynamic_frame.from_catalog(
         database="big_market_db",
@@ -17,16 +14,12 @@ def SourceNode(glueContext):
         transformation_ctx="source"
     )
 
-# ----------------------------------------
-# Node 2: Drop Duplicates
-# ----------------------------------------
+
 def DropDuplicatesNode(glueContext, dyf):
     df = dyf.toDF().dropDuplicates()
     return DynamicFrame.fromDF(df, glueContext, "dropdup")
 
-# ----------------------------------------
-# Node 3: Schema Mapping
-# ----------------------------------------
+
 def SchemaNode(glueContext, dyf):
     from pyspark.sql.functions import col
 
@@ -47,9 +40,7 @@ def SchemaNode(glueContext, dyf):
 
     return DynamicFrame.fromDF(df, glueContext, "schema")
 
-# ----------------------------------------
-# Node 4: Fat Content Clean
-# ----------------------------------------
+
 def FatCleanNode(glueContext, dyf):
     from pyspark.sql.functions import col, when
 
@@ -64,9 +55,7 @@ def FatCleanNode(glueContext, dyf):
 
     return DynamicFrame.fromDF(df, glueContext, "fatclean")
 
-# ----------------------------------------
-# Node 5: Visibility Clean
-# ----------------------------------------
+
 def VisibilityNode(glueContext, dyf):
     from pyspark.sql.functions import col, when, avg, round, lit
 
@@ -86,9 +75,7 @@ def VisibilityNode(glueContext, dyf):
 
     return DynamicFrame.fromDF(df, glueContext, "visibility")
 
-# ----------------------------------------
-# Node 6: Null Handling
-# ----------------------------------------
+
 def NullNode(glueContext, dyf):
     from pyspark.sql.functions import col, when, avg, round, lit, count
     from pyspark.sql.window import Window
@@ -129,9 +116,7 @@ def NullNode(glueContext, dyf):
 
     return DynamicFrame.fromDF(df, glueContext, "nullhandled")
 
-# ----------------------------------------
-# Node 7: Data Quality
-# ----------------------------------------
+
 def DataQualityNode(glueContext, dyf):
     Rules = """
     Rules = [
@@ -153,9 +138,7 @@ def DataQualityNode(glueContext, dyf):
 
     return passed, failed
 
-# ----------------------------------------
-# Node 8: S3 Target
-# ----------------------------------------
+
 def S3TargetNode(glueContext, dyf):
     glueContext.write_dynamic_frame.from_options(
         frame=dyf,
@@ -168,9 +151,7 @@ def S3TargetNode(glueContext, dyf):
         transformation_ctx="s3_target"
     )
 
-# ----------------------------------------
-# Node 9: Glue Catalog Target
-# ----------------------------------------
+
 def CatalogTargetNode(glueContext, dyf):
     glueContext.write_dynamic_frame.from_catalog(
         frame=dyf,
@@ -183,9 +164,7 @@ def CatalogTargetNode(glueContext, dyf):
         transformation_ctx="catalog_target"
     )
 
-# ----------------------------------------
-# Main Pipeline (DAG)
-# ----------------------------------------
+
 args = getResolvedOptions(sys.argv, ["JOB_NAME"])
 
 sc = SparkContext()
@@ -193,7 +172,7 @@ glueContext = GlueContext(sc)
 job = Job(glueContext)
 job.init(args["JOB_NAME"], args)
 
-# Flow
+
 source = SourceNode(glueContext)
 dropdup = DropDuplicatesNode(glueContext, source)
 schema = SchemaNode(glueContext, dropdup)
