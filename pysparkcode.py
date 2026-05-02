@@ -15,9 +15,20 @@ def SourceNode(glueContext):
     )
 
 
-def DropDuplicatesNode(glueContext, dyf):
-    df = dyf.toDF().dropDuplicates()
-    return DynamicFrame.fromDF(df, glueContext, "dropdup")
+def DropDuplicatesMyTransform(glueContext, dfc) -> DynamicFrameCollection:
+    from pyspark.sql.functions import col
+
+    key = list(dfc.keys())[0]
+    dyf = dfc.select(key)
+
+    if isinstance(dyf, DynamicFrameCollection):
+        key2 = list(dyf.keys())[0]
+        dyf = dyf.select(key2)
+        
+    df = dyf.toDF()
+    
+    df = df.dropDuplicates()
+    result_dyf = DynamicFrame.fromDF(df,glueContext,"result_dyf")
 
 
 def SchemaNode(glueContext, dyf):
