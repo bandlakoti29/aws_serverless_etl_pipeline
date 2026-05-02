@@ -1,0 +1,63 @@
+import json
+import boto3
+import time
+
+# Initialize clients
+glue = boto3.client('glue')
+
+CRAWLER_NAME = "big-market-crawler"
+JOB_NAME = "big-market-etl-job"
+
+def lambda_handler(event, context):
+    try:
+        Get S3 event details
+        bucket = event['Records'][0]['s3']['bucket']['name']
+        key = event['Records'][0]['s3']['object']['key']
+
+        print(f"New file uploaded in bucket: {bucket}")
+        print(f"File key: {key}")
+
+        
+        Step 1: Start Glue Crawler
+  
+        print("Starting Glue Crawler...")
+        glue.start_crawler(Name=CRAWLER_NAME)
+
+        # Wait until crawler finishes (important)
+        while True:
+            crawler_state = glue.get_crawler(Name=CRAWLER_NAME)['Crawler']['State']
+            print(f"Crawler state: {crawler_state}")
+
+            if crawler_state == "READY":
+                break
+
+            time.sleep(10)
+
+        print("Crawler completed successfully!")
+
+
+         Step 2: Start Glue ETL Job
+     
+        print("Starting Glue ETL Job...")
+
+        response = glue.start_job_run(
+            JobName=JOB_NAME,
+            Arguments={
+                "--s3_input_path": f"s3://{bucket}/{key}"
+            }
+        )
+
+        job_run_id = response['JobRunId']
+        print(f"Glue Job started with Run ID: {job_run_id}")
+
+        return {
+            "statusCode": 200,
+            "body": json.dumps("Crawler and ETL job triggered successfully!")
+        }
+
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps("Error triggering pipeline")
+        }
