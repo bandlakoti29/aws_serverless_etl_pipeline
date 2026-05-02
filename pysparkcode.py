@@ -1,18 +1,75 @@
 import sys
 from awsglue.transforms import *
+from awsgluedq.transforms import EvaluateDataQuality
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from awsglue.dynamicframe import DynamicFrame, DynamicFrameCollection
 
-# -------------------------------
-# Transform 1: Clean Visibility
-# -------------------------------
-def VisibilityMyTransform(glueContext, dfc) -> DynamicFrameCollection:
+# ----------------------------------------
+# Node 1: Source
+# ----------------------------------------
+def SourceNode(glueContext):
+    return glueContext.create_dynamic_frame.from_catalog(
+        database="big_market_db",
+        table_name="input_data",
+        transformation_ctx="source"
+    )
+
+# ----------------------------------------
+# Node 2: Drop Duplicates
+# ----------------------------------------
+def DropDuplicatesNode(glueContext, dyf):
+    df = dyf.toDF().dropDuplicates()
+    return DynamicFrame.fromDF(df, glueContext, "dropdup")
+
+# ----------------------------------------
+# Node 3: Schema Mapping
+# ----------------------------------------
+def SchemaNode(glueContext, dyf):
+    from pyspark.sql.functions import col
+
+    df = dyf.toDF().select(
+        col("Item_Identifier").alias("item_id"),
+        col("Item_Weight").cast("double").alias("item_weight"),
+        col("Item_Fat_Content").alias("fat_content"),
+        col("Item_Visibility").cast("double").alias("visibility"),
+        col("Item_Type").alias("item_type"),
+        col("Item_MRP").cast("double").alias("mrp"),
+        col("Outlet_Identifier").alias("outlet_id"),
+        col("Outlet_Establishment_Year").cast("int").alias("est_year"),
+        col("Outlet_Size").alias("outlet_size"),
+        col("Outlet_Location_Type").alias("location_type"),
+        col("Outlet_Type").alias("outlet_type"),
+        col("Item_Outlet_Sales").cast("double").alias("sales")
+    )
+
+    return DynamicFrame.fromDF(df, glueContext, "schema")
+
+# ----------------------------------------
+# Node 4: Fat Content Clean
+# ----------------------------------------
+def FatCleanNode(glueContext, dyf):
+    from pyspark.sql.functions import col, when
+
+    df = dyf.toDF()
+
+    df = df.withColumn(
+        "fat_content",
+        when((col("fat_content") == "LF") | (col("fat_content") == "low fat"), "Low Fat")
+        .when(col("fat_content") == "reg", "Regular")
+        .otherwise(col("fat_content"))
+    )
+
+    return DynamicFrame.fromDF(df, glueContext, "fatclean")
+
+# ----------------------------------------
+# Node 5: Visibility Clean
+# ----------------------------------------
+def VisibilityNode(glueContext, dyf):
     from pyspark.sql.functions import col, when, avg, round, lit
 
-    dyf = list(dfc.values())[0]
     df = dyf.toDF()
 
     df = df.withColumn("visibility", col("visibility") * 100)
@@ -27,82 +84,19 @@ def VisibilityMyTransform(glueContext, dfc) -> DynamicFrameCollection:
         .otherwise(round(col("visibility"), 4))
     )
 
-    return DynamicFrameCollection(
-        {"output": DynamicFrame.fromDF(df, glueContext, "result")},
-        glueContext
-    )
+    return DynamicFrame.fromDF(df, glueContext, "visibility")
 
-# -------------------------------
-# Transform 2: Clean Fat Content
-# -------------------------------
-def FatCleanMyTransform(glueContext, dfc) -> DynamicFrameCollection:
-    from pyspark.sql.functions import col, when
-
-    dyf = list(dfc.values())[0]
-    df = dyf.toDF()
-
-    df = df.withColumn(
-        "fat_content",
-        when((col("fat_content") == "LF") | (col("fat_content") == "low fat"), "Low Fat")
-        .when(col("fat_content") == "reg", "Regular")
-        .otherwise(col("fat_content"))
-    )
-
-    return DynamicFrameCollection(
-        {"output": DynamicFrame.fromDF(df, glueContext, "result")},
-        glueContext
-    )
-
-# -------------------------------
-# Transform 3: Drop Duplicates
-# -------------------------------
-def DropDuplicatesMyTransform(glueContext, dfc) -> DynamicFrameCollection:
-    dyf = list(dfc.values())[0]
-    df = dyf.toDF().dropDuplicates()
-
-    return DynamicFrameCollection(
-        {"output": DynamicFrame.fromDF(df, glueContext, "result")},
-        glueContext
-    )
-
-# -------------------------------
-# Transform 4: Change Schema
-# -------------------------------
-def ChangeSchemaMyTransform(glueContext, dfc) -> DynamicFrameCollection:
-    dyf = list(dfc.values())[0]
-
-    mapped_dyf = ApplyMapping.apply(
-        frame=dyf,
-        mappings=[
-            ("Item_Identifier", "string", "item_id", "string"),
-            ("Item_Weight", "string", "item_weight", "double"),
-            ("Item_Fat_Content", "string", "fat_content", "string"),
-            ("Item_Visibility", "string", "visibility", "double"),
-            ("Item_Type", "string", "item_type", "string"),
-            ("Item_MRP", "string", "mrp", "double"),
-            ("Outlet_Identifier", "string", "outlet_id", "string"),
-            ("Outlet_Establishment_Year", "string", "est_year", "int"),
-            ("Outlet_Size", "string", "outlet_size", "string"),
-            ("Outlet_Location_Type", "string", "location_type", "string"),
-            ("Outlet_Type", "string", "outlet_type", "string"),
-            ("Item_Outlet_Sales", "string", "sales", "double")
-        ]
-    )
-
-    return DynamicFrameCollection({"output": mapped_dyf}, glueContext)
-
-# -------------------------------
-# Transform 5: Handle Nulls
-# -------------------------------
-def NullMyTransform(glueContext, dfc) -> DynamicFrameCollection:
+# ----------------------------------------
+# Node 6: Null Handling
+# ----------------------------------------
+def NullNode(glueContext, dyf):
     from pyspark.sql.functions import col, when, avg, round, lit, count
     from pyspark.sql.window import Window
     from pyspark.sql.functions import row_number
 
-    dyf = list(dfc.values())[0]
     df = dyf.toDF()
 
-    # Fill item_weight
+    # item_weight
     avg_weight = df.select(avg("item_weight")).collect()[0][0]
 
     df = df.withColumn(
@@ -111,11 +105,9 @@ def NullMyTransform(glueContext, dfc) -> DynamicFrameCollection:
         .otherwise(round(col("item_weight"), 4))
     )
 
-    # Mode calculation for outlet_size
-    window_spec = (
-        Window.partitionBy("location_type", "outlet_type")
-        .orderBy(col("count").desc())
-    )
+    # outlet_size mode
+    window_spec = Window.partitionBy("location_type", "outlet_type") \
+                        .orderBy(col("count").desc())
 
     mode_df = (
         df.filter(col("outlet_size").isNotNull())
@@ -135,36 +127,85 @@ def NullMyTransform(glueContext, dfc) -> DynamicFrameCollection:
         .otherwise(col("outlet_size"))
     ).drop("filled_size")
 
-    return DynamicFrameCollection(
-        {"output": DynamicFrame.fromDF(df, glueContext, "result")},
-        glueContext
+    return DynamicFrame.fromDF(df, glueContext, "nullhandled")
+
+# ----------------------------------------
+# Node 7: Data Quality
+# ----------------------------------------
+def DataQualityNode(glueContext, dyf):
+    Rules = """
+    Rules = [
+        ColumnCount > 10,
+        Completeness "item_weight" > 0.9,
+        IsUnique "item_id"
+    ]
+    """
+
+    dq = EvaluateDataQuality().process_rows(
+        frame=dyf,
+        ruleset=Rules,
+        publishing_options={"dataQualityEvaluationContext": "dq_check"},
+        additional_options={"performanceTuning.caching": "CACHE_NOTHING"}
     )
 
-# -------------------------------
-# Main Job
-# -------------------------------
+    passed = dq.select("rowLevelOutcomes")
+    failed = dq.select("ruleOutcomes")
+
+    return passed, failed
+
+# ----------------------------------------
+# Node 8: S3 Target
+# ----------------------------------------
+def S3TargetNode(glueContext, dyf):
+    glueContext.write_dynamic_frame.from_options(
+        frame=dyf,
+        connection_type="s3",
+        format="parquet",
+        connection_options={
+            "path": "s3://big-market-data/clean-output/",
+            "partitionKeys": ["outlet_type", "location_type"]
+        },
+        transformation_ctx="s3_target"
+    )
+
+# ----------------------------------------
+# Node 9: Glue Catalog Target
+# ----------------------------------------
+def CatalogTargetNode(glueContext, dyf):
+    glueContext.write_dynamic_frame.from_catalog(
+        frame=dyf,
+        database="big_market_db",
+        table_name="processed_output",
+        additional_options={
+            "enableUpdateCatalog": True,
+            "partitionKeys": ["outlet_type", "location_type"]
+        },
+        transformation_ctx="catalog_target"
+    )
+
+# ----------------------------------------
+# Main Pipeline (DAG)
+# ----------------------------------------
 args = getResolvedOptions(sys.argv, ["JOB_NAME"])
 
 sc = SparkContext()
 glueContext = GlueContext(sc)
-spark = glueContext.spark_session
-
 job = Job(glueContext)
 job.init(args["JOB_NAME"], args)
 
-# Read Data
-source = glueContext.create_dynamic_frame.from_options(
-    format="csv",
-    connection_type="s3",
-    format_options={"withHeader": True, "separator": ","},
-    connection_options={"paths": ["s3://big-market-data/Input_Data/"], "recurse": True}
-)
+# Flow
+source = SourceNode(glueContext)
+dropdup = DropDuplicatesNode(glueContext, source)
+schema = SchemaNode(glueContext, dropdup)
+fat = FatCleanNode(glueContext, schema)
+visibility = VisibilityNode(glueContext, fat)
+cleaned = NullNode(glueContext, visibility)
 
-# Pipeline Execution
-drop_dup = DropDuplicatesMyTransform(glueContext, DynamicFrameCollection({"df": source}, glueContext))
-schema = ChangeSchemaMyTransform(glueContext, drop_dup)
-fat_clean = FatCleanMyTransform(glueContext, schema)
-visibility = VisibilityMyTransform(glueContext, fat_clean)
-final_df = NullMyTransform(glueContext, visibility)
+# Branch: Data Quality
+passed, failed = DataQualityNode(glueContext, cleaned)
+
+# Targets
+S3TargetNode(glueContext, passed)
+CatalogTargetNode(glueContext, passed)
 
 job.commit()
